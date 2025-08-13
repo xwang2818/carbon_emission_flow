@@ -3,6 +3,8 @@
 碳流计算部分
 """
 
+# TODO 计算eg
+
 import numpy as np
 """
 先使用numpy编程，后期如果需要使用torch联动，修改比较快
@@ -57,6 +59,8 @@ def loss_r_l(k: int, j: int, pkj_loss: float, pk: float, _r_l_=None):
     print(f'支路{k+1}-{j+1}的损耗碳排放率计算完毕')    
     return pkj_loss / pk * _r_l_
 
+def eg_caculate
+
 def r_l_2g4b(eg: np.array, au: np.array, pg: np.array,
               pk_lis: list, plk_lis: list, pkj_loss_dict: dict):
     """
@@ -75,7 +79,7 @@ def r_l_2g4b(eg: np.array, au: np.array, pg: np.array,
             if key[0] == str(k+1):
                 branch_res[key] = float(branch_r_l(k, eval(key[-1]), pkj=value[0], pk=pk_lis[k], _r_l_= _r_l_))
                 loss_res[key] = float(loss_r_l(k, eval(key[-1]), pkj_loss=value[1], pk=pk_lis[k], _r_l_= _r_l_))
-    return bus_res,branch_res, loss_res
+    return bus_res, branch_res, loss_res
 
 
         

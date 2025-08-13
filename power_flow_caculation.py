@@ -7,80 +7,53 @@ import numpy as np
 from pypower.api import runpf, ppoption
 
 def mpc_to_power_flow_analysis(mpc):
+    # ppopt = ppoption(PF_ALG=1, VERBOSE=0, OUT_ALL=0)  # 牛顿法
     ppopt = ppoption(PF_ALG=1, VERBOSE=0)  # 牛顿法
     # 计算潮流
     power_flow_analysis_res, success = runpf(mpc, ppopt)
     return power_flow_analysis_res
 
-def bus_idx_shape(results):
-    n = results['bus'].shape[0]
-    bus_idx = {int(results['bus'][i, 0]): i for i in range(n)}
-    return n, bus_idx
 
-def compute_au_pi(results, n, bus_idx):
+def compute_pk(results, pg_arr):
     """
-    通用 Au 计算：
-    Au[j,i] = -|p_ji| / Pi
-    Pi 规则：
-        负荷节点 i → Pi = Σ|k→i| + Pd_i
-        发电机节点 → Pi = Σ|i→k|
-    p_ji = 下游节点实际得到功率（|To Bus Injection|）
+    pk = 绝对值（节点流入功率） + 节点发动机的注入功率
     """
-    # n = results['bus'].shape[0]
-    # bus_idx = {int(results['bus'][i, 0]): i for i in range(n)}
-    Au = np.eye(n)
+    # 2) 计算 pk_arr
+    pk_arr = pg_arr
+    pji_arr = results['branch'][:, [0, 1, 15]]
 
-    # 1) 标记发电机节点
-    gen_buses = {int(g[0]) for g in results['gen']}
+    for idx, bus_id in enumerate(pk_arr[:, 0]):
+        mask = pji_arr[:, 1] == bus_id
+        if mask.any():
+            pij_abs_sum = np.sum(np.abs(pji_arr[mask, -1]))
+            pk_arr[idx, 1] += pij_abs_sum
 
-    # 2) 计算 Pi
-    Pi = np.zeros(n)
+    return pk_arr
 
-    # 2-a 先加负荷
-    for b in range(n):
-        Pi[b] += results['bus'][b, 2]  # Pd
+
 
     # 2-b 再按支路累加
-    for br in results['branch']:
-        f, t = int(br[0]), int(br[1])
-        P_abs = abs(br[13])
-
-        # if f in gen_buses:
-        #     # 发电机：加到出端
-        Pi[bus_idx[f]] += P_abs
-        # else:
-            # 负荷：加到入端
-            # Pi[bus_idx[t]] += P_abs
-
+def compute_au(results, pk_arr):
+    shape = results['bus'].shape[0]
+    pji_arr = results['branch'][:, [0, 1, 15]]
+    au = np.eye(shape)
     # 3) 填 Au
-    for br in results['branch']:
-        f, t = int(br[0]), int(br[1])
-        Pft   = br[13]
-        P_abs = abs(br[15])
+    for i in pji_arr:
+        bus_from = np.int32(i[0])
+        bus_to = np.int32(i[1])
+        au[bus_to - 1, bus_from - 1] = - np.abs(i[-1]) / pk_arr[bus_from - 1, 1]
+    return au
 
-        if abs(Pft) < 1e-6:
-            continue
-
-        # 上游节点判定
-        if Pft > 0:  # f→t ⇒ f 是 t 的上游
-            upstream, downstream = bus_idx[f], bus_idx[t]
-        else:        # t→f ⇒ t 是 f 的上游
-            upstream, downstream = bus_idx[t], bus_idx[f]
-
-        if Pi[upstream] > 1e-6:
-            Au[downstream, upstream] = -P_abs / Pi[upstream]
-
-    return Au, Pi
-
-def pg(results, n):
-    n = results['bus'].shape[0]
-    pg = np.zeros(n)
+def get_pg_arr(results):
+    shape = results['bus'].shape[0]
+    pg = np.zeros((shape, 2))
+    pg[:, 0] = results['bus'][:, 0]
     _gen = results['gen']
     _gen_idx = np.int32(_gen[:, 0] - 1)
-    pg[_gen_idx] = _gen[:, 1]
+    pg[_gen_idx, 1] = _gen[:, 1]
     return pg
 
-def plk(results):
+def get_plk_arr(results):
     return results['bus'][:, 2]
 
 
@@ -112,7 +85,9 @@ if __name__ == '__main__':
     ])
 }
     p_a_res = mpc_to_power_flow_analysis(mpc)
-    shape, bus_idx = bus_idx_shape(p_a_res)
-    pg = pg(p_a_res, shape)
-    plk = plk(p_a_res)
+    # shape, bus_idx = bus_idx_shape(p_a_res)
+    pg_arr = get_pg_arr(p_a_res)
+    # plk_arr = get_plk_arr(p_a_res)
+    pk_arr = compute_pk(p_a_res, pg_arr)
+    au = compute_au(p_a_res, pk_arr)
     print()
