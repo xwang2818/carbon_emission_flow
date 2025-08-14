@@ -80,7 +80,7 @@ def loss_r_l(k: int, j: int, pkj_loss: float, pk: float, _r_l_=None):
     plk_loss: 支路的损耗功率，MW
     pk: 节点流过功率，MW
     """
-    print(f'支路{k+1}-{j+1}的损耗碳排放率计算完毕')    
+    print(f'支路{k}-{j}的损耗碳排放率计算完毕')    
     return pkj_loss / pk * _r_l_
 
 
@@ -113,22 +113,22 @@ def carbon_flow_rate(all_paras):
         pk =  all_paras['pk_arr'][i, 1]
         plk = all_paras['plk_arr'][i, 1]
         bus_flow_res[i, 1] = bus_r_l(i, pk=pk, plk=plk, _r_l_=_r_l_)
-        for k in range(branch_flow_res.shape[0]):
-            bus_from = i + 1
-            mask = branch_flow_res[:, 0] == bus_from
-            idx = np.where(mask)[0]
-            for j in range(branch_flow_res[idx].shape[0]):
-                bus_to = int(branch_flow_res[idx[j], 1])
-                pkj = all_paras['pkj_and_loss'][idx[j], -2]
-                pkj_loss = all_paras['pkj_and_loss'][idx[j], -1]
-                branch_flow_res[idx[j], -2] = branch_r_l(
-                    bus_from, bus_to, 
-                    pkj, pk, _r_l_
-                    )
-                branch_flow_res[idx[j], -1] = loss_r_l(
-                    bus_from, bus_to, 
-                    pkj_loss, pk, _r_l_
-                    )
+
+        bus_from = i + 1
+        mask = branch_flow_res[:, 0] == bus_from
+        idx = np.where(mask)[0]
+        for j in range(branch_flow_res[idx].shape[0]):
+            bus_to = int(branch_flow_res[idx[j], 1])
+            pkj = all_paras['pkj_and_loss'][idx[j], -2]
+            pkj_loss = all_paras['pkj_and_loss'][idx[j], -1]
+            branch_flow_res[idx[j], -2] = branch_r_l(
+                bus_from, bus_to, 
+                pkj, pk, _r_l_
+                )
+            branch_flow_res[idx[j], -1] = loss_r_l(
+                bus_from, bus_to, 
+                pkj_loss, pk, _r_l_
+                )
     carbon_flow_rate_res['bus_carbon_flow_res'] = bus_flow_res
     carbon_flow_rate_res['branch_carbon_flow_res'] = branch_flow_res
     return carbon_flow_rate_res
@@ -164,7 +164,7 @@ def get_all_paras(power_flow_paras, unit_carbon_paras):
     all_paras['eg_arr'] = eg
     return all_paras
 
-def carbon_flow_caculation(mpc, unit_carbon_paras):
+def carbon_flow_caculation(mpc, unit_carbon_paras, print_=0):
     power_flow_paras = get_power_flow_paras(mpc)
     all_paras = power_flow_paras.copy()
     eg = get_eg(power_flow_paras['pg_arr'], unit_carbon_paras)
@@ -172,6 +172,13 @@ def carbon_flow_caculation(mpc, unit_carbon_paras):
     carbon_flow_res = carbon_flow_rate(all_paras)
     carbon_flow_res = branch_carbon_flow_density(carbon_flow_res)
     carbon_flow_res = bus_carbon_potential(carbon_flow_res)
+    if print_:
+        print('-' * 16)
+        print('*本算例碳流相关计算结果如下*')
+        print('1.节点相关的碳流计算结果如下，从左到右每列分别为节点标号、节点碳流率、节点碳势')
+        print(np.array2string(carbon_flow_res['bus_carbon_flow_res'], suppress_small=True, precision=4))
+        print('2.支路相关的碳流计算结果如下，从左到右每列分别为from节点标号、to节点标号、支路碳流率、支路损耗碳流率、支路碳流密度')
+        print(np.array2string(carbon_flow_res['branch_carbon_flow_res'], suppress_small=True, precision=4))
     return carbon_flow_res
 
         

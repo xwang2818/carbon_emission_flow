@@ -37,5 +37,5 @@ unit_carbon_paras = np.array([
     [0.0004, 0.12, 2.5, 1.01, 0.80, 0.98, 0.8],
     [0.0010, 0.14, 4.0, 1.00, 0.80, 0.98, 0]
 ])
-carbon_flow_res = carbon_flow_caculation(mpc, unit_carbon_paras)
+carbon_flow_res = carbon_flow_caculation(mpc, unit_carbon_paras, 1)
 breakpoint
