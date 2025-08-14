@@ -4,19 +4,10 @@
 ②调用潮流分布计算和碳流分布计算进行完整计算
 """
 
-# TODO 连接碳流计算以及潮流计算，以类似matpower的形式进行输出
-
+from carbon_emission_flow import carbon_flow_caculation
 import numpy as np
 
 
-
-
-
-def para_getting(power_flow_analysis_res, mpc):
-    return 
-
-#计算文章中给出的2机4节点潮流
-# 构造 mpc 字典
 mpc = {
     'version': '2',
     'baseMVA': 100,
@@ -42,5 +33,9 @@ mpc = {
     ])
 }
 
-a = mpc_to_power_flow_analysis(mpc)
-print()
+unit_carbon_paras = np.array([
+    [0.0004, 0.12, 2.5, 1.01, 0.80, 0.98, 0.8],
+    [0.0010, 0.14, 4.0, 1.00, 0.80, 0.98, 0]
+])
+carbon_flow_res = carbon_flow_caculation(mpc, unit_carbon_paras)
+breakpoint
