@@ -115,6 +115,7 @@ def carbon_flow_rate(all_paras: dict) -> dict:
         pk =  all_paras['pk_arr'][i, 1]                 # 取该节点的流过功率 P_k
         plk = all_paras['plk_arr'][i, 1]                # 取该节点的负荷 P_Lk
         bus_flow_res[i, 1] = bus_r_l(i, pk=pk, plk=plk, _r_l_=_r_l_)  # 节点碳流率：回填到结果数组第二列
+        
 
         bus_from = i + 1                                # 将 0 基节点索引转换为数据中的 1 基节点编号
         mask = branch_flow_res[:, 0] == bus_from        # 找到以该节点为 from 端的支路
@@ -133,6 +134,10 @@ def carbon_flow_rate(all_paras: dict) -> dict:
                 bus_from, bus_to, 
                 pkj_loss, pk, _r_l_
             )
+    # ===== 追加“机组注入碳流率”列：gen_carbon = Pg * eg =====
+    generator_r_l = all_paras['pg_arr'].copy()                          # 复制 Pg 数组（保留 [bus, Pg] 结构）
+    generator_r_l[:, 1] = generator_r_l[:, 1] * all_paras['eg_arr'][:, 1]  # 逐节点计算 Pg * eg（发电侧碳排量）
+    bus_flow_res = np.column_stack([bus_flow_res, generator_r_l[:, 1]]) # 将机组注入碳流率作为第3列追加到节点结果
 
     carbon_flow_rate_res['bus_carbon_flow_res'] = bus_flow_res         # 将节点碳流率结果加入返回字典
     carbon_flow_rate_res['branch_carbon_flow_res'] = branch_flow_res   # 将支路/网损碳流率结果加入返回字典
@@ -166,16 +171,20 @@ def bus_carbon_potential(carbon_flow_rate_res: dict) -> dict:
     branch_enj[:, 2] = branch_flow_res[:, 2] - branch_flow_res[:, 3]         # 计算支路“净碳流率” = 支路碳流率 - 网损碳流率
     pk_arr = carbon_flow_rate_res['pk_arr'].copy()                            # 复制各节点流过功率数组 [node_id, P_k]
 
+
     for i in pk_arr[:, 0]:                                                   # 遍历每个节点编号（与数据中的编号一致）
         mask_branch = branch_enj[:, 1] == i                                  # 选取以该节点为 to 端的支路（汇入该节点）
         if mask_branch.any():                                                # 若存在汇入该节点的支路
             mask_bus = pk_arr[:, 0] == i                                     # 找到该节点在 pk_arr 中的行
             enj = np.sum(branch_enj[mask_branch, -1]) / pk_arr[mask_bus, 1]  # 节点碳势 = 汇入净碳流率之和 / 节点流过功率
-            # FIXME 问题：发电机节点同时有注入的情况下，碳势是否等于发电机节点碳排放强度与注入碳势的简单相加？
             bus_enj[mask_bus, -1] += enj                                     # 将该节点碳势累加到 bus_enj 的最后一列
+    
+    mask_generator = carbon_flow_rate_res['plk_arr'][:, 1] == 0              # 找到无负荷（P_Lk==0）的节点（通常为纯发电节点）
+    bus_enj[mask_generator, 1] = 0                                           # 将此类节点的碳势强制置 0（避免误解读）
+
 
     carbon_flow_rate_res['bus_carbon_flow_res'] = np.column_stack(           # 将节点碳势追加到节点结果数组
-        [carbon_flow_rate_res['bus_carbon_flow_res'], bus_enj[:, -1]]
+        [carbon_flow_rate_res['bus_carbon_flow_res'],  bus_enj[:, -1], carbon_flow_rate_res['eg_arr'][:, 1]]
     )
     return carbon_flow_rate_res                                              # 返回更新后的结果字典
 
@@ -208,37 +217,64 @@ def carbon_flow_caculation(mpc: dict, unit_carbon_paras: np.array, print_: int =
 
     return carbon_flow_res                                       # 返回结果
 
+def system_balance_check(carbon_flow_res: dict) -> tuple[float, float, float, float]:
+    """
+    本函数用于进行系统“碳平衡”检验：分别统计网损碳流率之和、发电侧碳排量之和、负荷侧碳流率之和，
+    并给出用于平衡校验的组合量（loss_sum + load_r_l_sum），以便与发电侧总量对比。
+    :param carbon_flow_res: 结果字典，需包含：
+        - 'branch_carbon_flow_res'：支路结果数组，其中第 4 列（索引 3）为 r_l_loss（网损碳流率）
+        - 'bus_carbon_flow_res'：节点结果数组，其中第 3 列（索引 2）为 gen_carbon（Pg*eg），
+                                  第 2 列（索引 1）为 r_l_bus（负荷侧碳流率）
+    :return: 四元组 (loss_sum, g_r_l_sum, load_r_l_sum, balance_sum)
+        - loss_sum：网损碳流率求和（按列 r_l_loss 汇总）
+        - g_r_l_sum：发电侧碳排量求和（按列 gen_carbon 汇总）
+        - load_r_l_sum：负荷侧碳流率求和（按列 r_l_bus 汇总）
+        - balance_sum：loss_sum + load_r_l_sum（用于与 g_r_l_sum 对比做平衡校验）
+    """
+    loss_r_l_sum = np.sum(carbon_flow_res['branch_carbon_flow_res'][:, 3])  # 网损碳流率之和（支路结果第 4 列）
+    g_r_l_sum = np.sum(carbon_flow_res['bus_carbon_flow_res'][:, 2])        # 发电侧碳排量之和（节点结果第 3 列）
+    load_r_l_sum = np.sum(carbon_flow_res['bus_carbon_flow_res'][:, 1])     # 负荷侧碳流率之和（节点结果第 2 列）
+    return loss_r_l_sum, g_r_l_sum, load_r_l_sum, loss_r_l_sum + load_r_l_sum   # 注意：此处的 loss_sum 名称应与上方 loss_r_l_sum 对应
+
+
+
 
 def print_carbon_results(carbon_flow_res: dict, precision: int = 4) -> None:
     """
-    用于美观地打印碳流相关计算结果，使所有分割线与两张表格同宽
-    :param carbon_flow_res: 碳流计算结果字典，需包含 'bus_carbon_flow_res'、'branch_carbon_flow_res'
+    用于美观地打印碳流相关计算结果，并统一所有分割线与表格宽度；同时追加“系统碳平衡检验”。
+    术语说明：本函数中将“发电侧碳排量”统一称为“发电机注入碳流率”。
+    :param carbon_flow_res: 碳流计算结果字典，需包含
+        - 'bus_carbon_flow_res'：节点结果数组（列：bus, r_l, gen_inj_r_l, potential, gen_eg）
+        - 'branch_carbon_flow_res'：支路结果数组（列：from, to, r_l, loss_r_l, density）
     :param precision: 浮点数打印的小数位数
     :return: 无
     """
-    def _format_table(arr: np.array, headers: list = None, precision: int = 4, target_width: int = None) -> (str, int):
+    def _format_table(arr, headers=None, precision=4, target_width=None):
         """
         将二维数组格式化为等宽对齐表格；若提供 target_width，则自动加宽最后一列以匹配目标宽度
         :param arr: 待格式化的二维数组
         :param headers: 可选的表头列表，与列数一致
         :param precision: 浮点数打印的小数位数
-        :param target_width: 期望整张表（含边框）的总宽度；若为 None，则按内容自适应
+        :param target_width: 期望整张表（含边框）的总宽度；None 表示自适应
         :return: (格式化字符串, 表格总宽度)
         """
-        arr = np.asarray(arr)                               # 保证为 ndarray
-        if arr.ndim != 2:                                  # 非二维数组则直接返回默认字符串
+        arr = np.asarray(arr)
+        if arr.ndim != 2:
             s = np.array2string(arr, suppress_small=True, precision=precision)
             return s, max(len(line) for line in s.splitlines())
 
         rows, cols = arr.shape
-        # 判断每列是否为“整数列”（全部元素近似为整数）
+        if headers is None:
+            headers = [f'col{c+1}' for c in range(cols)]
+
+        # 判断每列是否“整数列”
         int_col = []
         for c in range(cols):
             col = arr[:, c]
             ok = np.all(np.isfinite(col)) and np.all(np.isclose(col, np.round(col)))
             int_col.append(ok)
 
-        # 所有元素先转为字符串（整数列无小数，浮点列按 precision）
+        # 数值转字符串
         str_mat = []
         for r in range(rows):
             row_str = []
@@ -248,49 +284,48 @@ def print_carbon_results(carbon_flow_res: dict, precision: int = 4) -> None:
                 row_str.append(s)
             str_mat.append(row_str)
 
-        # 初始列宽（含表头）
+        # 列宽（含表头）
         widths = []
         for c in range(cols):
             col_cells = [str_mat[r][c] for r in range(rows)]
             w = max(len(x) for x in col_cells)
-            if headers is not None:
-                w = max(w, len(headers[c]))
+            w = max(w, len(headers[c]))
             widths.append(w)
 
-        # 构造函数：根据当前 widths 生成整张表与宽度
+        # 构造一次表格
         def _build(widths_local):
             def _hbar(left, mid, right):
-                return left + mid.join('─' * (w + 2) for w in widths_local) + right  # 每列左右各 1 空格
+                return left + mid.join('─' * (w + 2) for w in widths_local) + right  # 每列左右各加 1 空格
             top = _hbar('┌', '┬', '┐')
             sep = _hbar('├', '┼', '┤')
             bot = _hbar('└', '┴', '┘')
             lines = [top]
-            if headers is not None:
-                head = '│' + '│'.join(f" {headers[c]:<{widths_local[c]}} " for c in range(cols)) + '│'  # 表头左对齐
-                lines += [head, sep]
+            head = '│' + '│'.join(f" {headers[c]:<{widths_local[c]}} " for c in range(cols)) + '│'
+            lines += [head, sep]
             for r in range(rows):
-                line = '│' + '│'.join(f" {str_mat[r][c]:>{widths_local[c]}} " for c in range(cols)) + '│'  # 数值右对齐
+                line = '│' + '│'.join(f" {str_mat[r][c]:>{widths_local[c]}} " for c in range(cols)) + '│'
                 lines.append(line)
             lines.append(bot)
             table_str = "\n".join(lines)
-            width_len = len(top)  # 顶部边框长度即整表宽度
+            width_len = len(top)
             return table_str, width_len
 
-        # 先按内容生成一次，得到当前宽度
         table_str, width_len = _build(widths)
 
-        # 若有统一目标宽度，且当前宽度不足，则加宽最后一列
+        # 若需要统一宽度则加宽最后一列
         if target_width is not None and target_width > width_len:
-            delta = target_width - width_len               # 需要额外补齐的宽度
-            widths[-1] += delta                            # 全部补给最后一列
-            table_str, width_len = _build(widths)          # 重新构造以满足统一宽度
+            delta = target_width - width_len
+            widths[-1] += delta
+            table_str, width_len = _build(widths)
 
         return table_str, width_len
 
-    # 先各自渲染，获取两张表的宽度
+    # 1) 先渲染节点表与支路表，获取宽度
+    bus_headers = ['bus', 'r_l', 'gen_inj_r_l', 'potential', 'gen_eg'] \
+        if carbon_flow_res['bus_carbon_flow_res'].shape[1] >= 4 else ['bus', 'r_l', 'gen_inj_r_l']
     bus_tbl_str, bus_w = _format_table(
         carbon_flow_res['bus_carbon_flow_res'],
-        headers=['bus', 'r_l', 'potential'],
+        headers=bus_headers,
         precision=precision,
         target_width=None
     )
@@ -301,36 +336,56 @@ def print_carbon_results(carbon_flow_res: dict, precision: int = 4) -> None:
         target_width=None
     )
 
-    # 统一宽度：取两者最大宽度
-    W = max(bus_w, br_w)
+    # 2) 系统碳平衡检验
+    loss_sum, gen_inj_sum, load_sum, balance_sum = system_balance_check(carbon_flow_res)  # 调用你前面写的函数
 
-    # 按统一宽度重新渲染两张表
-    bus_tbl_str, _ = _format_table(
-        carbon_flow_res['bus_carbon_flow_res'],
-        headers=['bus', 'r_l', 'potential'],
+    # 碳平衡表：单行 4 列（仅数值），表头为术语化列名
+    balance_arr = np.array([[gen_inj_sum, loss_sum,  load_sum, balance_sum]], dtype=float)
+    balance_headers = ['gen_inj_r_l_sum', 'loss_sum',  'load_r_l_sum', 'load_loss_sum']
+    balance_tbl_str, bal_w = _format_table(
+        balance_arr,
+        headers=balance_headers,
         precision=precision,
-        target_width=W
+        target_width=None
+    )
+
+    # 3) 统一宽度 W，并按 W 重渲染三张表
+    W = max(bus_w, br_w, bal_w)
+    bus_tbl_str, _ = _format_table(
+        carbon_flow_res['bus_carbon_flow_res'], headers=bus_headers, precision=precision, target_width=W
     )
     br_tbl_str, _ = _format_table(
         carbon_flow_res['branch_carbon_flow_res'],
         headers=['from', 'to', 'r_l', 'loss_r_l', 'density'],
-        precision=precision,
-        target_width=W
+        precision=precision, target_width=W
+    )
+    balance_tbl_str, _ = _format_table(
+        balance_arr, headers=balance_headers, precision=precision, target_width=W
     )
 
-    # 所有分割线同宽
     divider_main = '═' * W
     divider_section = '─' * W
 
-    # 打印：标题 + 节点表 + 分割线 + 支路表，全部同宽
-    print('\n' + divider_main)                 # 顶部分割线
-    print('★ 本算例碳流相关计算结果')            # 标题
-    print(divider_main + '\n')                 # 标题下分割线
+    # 4) 打印：标题 + 节点表 + 支路表 + 平衡检验表
+    print('\n' + divider_main)
+    print('★ 本算例碳流相关计算结果')
+    print(divider_main + '\n')
 
-    print('1) 节点相关结果（列：bus, r_l, potential）')  # 节点表说明
-    print(bus_tbl_str)                         # 节点表（统一宽度）
-    print('\n' + divider_section + '\n')       # 节间分割线（统一宽度）
+    print('1) 节点相关结果（列：' + ', '.join(bus_headers) + '）')
+    print(bus_tbl_str)
+    print('\n' + divider_section + '\n')
 
-    print('2) 支路相关结果（列：from, to, r_l, loss_r_l, density）')  # 支路表说明
-    print(br_tbl_str)                          # 支路表（统一宽度）
-    print('\n' + divider_main + '\n')          # 底部分割线（统一宽度）
+    print('2) 支路相关结果（列：from, to, r_l, loss_r_l, density）')
+    print(br_tbl_str)
+    print('\n' + divider_section + '\n')
+
+    print('3) 系统碳平衡检验（列：loss_sum, gen_inj_r_l_sum, load_r_l_sum, balance_sum）')
+    print(balance_tbl_str)
+
+    # 5) 平衡状态提示（PASS / FAIL）
+    ok = np.isclose(gen_inj_sum, balance_sum, rtol=1e-6, atol=1e-8)
+    status = 'PASS' if ok else 'FAIL'
+    delta = gen_inj_sum - balance_sum
+    tip = f"Check: {status}  (gen_inj_r_l_sum ?≈ balance_sum)  Δ = {delta:.{precision}g}"
+    print(tip.center(W))
+    print('\n' + divider_main + '\n')
