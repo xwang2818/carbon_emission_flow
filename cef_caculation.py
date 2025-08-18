@@ -1,10 +1,11 @@
 """
 汪超群, 陈懿, 迟长云, 等. 基于潮流分布矩阵的电力系统碳排放流计算方法[J]. 科学技术与工程(12): 4835-4842.
+
 本文件是项目的“最小可复现场景/示例脚本”。它在脚本内：
 1) 构造一个 4 节点的 MATPOWER 风格算例 mpc；
 2) 定义火电机组的单位碳排参数 unit_carbon_paras；
 3) 调用主流程函数 carbon_flow_caculation(mpc, unit_carbon_paras, print_=1)，
-   完成从潮流计算到碳流计算的一键式执行，并美观打印结果。
+   完成从潮流计算到碳流计算的一键式执行，并美观打印结果（含系统碳平衡检验）。
 
 数据结构
 --------
@@ -32,12 +33,23 @@
    - au: 二维数组 (N, N) → 潮流分布矩阵 A_u
    - eg_arr: 二维数组 (N, 2) → [bus, eg]（节点编号、单位碳排强度）
    - original_power_anlysis_res: 字典 → pypower.runpf 的原始潮流结果
-   - bus_carbon_flow_res: 二维数组 (N, 3) → [bus, r_l, potential]
-       * r_l：节点碳流率；potential：节点碳势
-   - branch_carbon_flow_res: 二维数组 (L, 5) → [from, to, r_l_branch, r_l_loss, density]
+   - bus_carbon_flow_res: 二维数组 (N, 5) →
+       [bus, r_l, gen_inj_r_l, potential, eg]
+       * r_l：节点碳流率
+       * gen_inj_r_l：发电机注入碳流率（Pg * eg）
+       * potential：节点碳势
+       * eg：单位碳排强度（与 eg_arr 第二列一致）
+   - branch_carbon_flow_res: 二维数组 (L, 5) →
+       [from, to, r_l_branch, r_l_loss, density]
        * r_l_branch：支路碳流率
        * r_l_loss：网损碳流率
        * density：碳流密度 = r_l_branch / P_kj（分母来自 pkj_and_loss 中的 P_kj）
+
+打印输出与碳平衡
+--------------
+- print_=1 时，会统一宽度打印“节点结果表”“支路结果表”与“系统碳平衡检验”。
+- 碳平衡检验：检查 gen_inj_r_l_sum ≈ loss_sum + load_r_l_sum（通过/不通过提示）。
+- 术语统一：“发电侧碳排量”在打印与注释中均表述为“发电机注入碳流率”。
 
 备注
 ----
@@ -45,6 +57,7 @@
 - 本文件仅负责组装输入并调用主流程；计算细节在 power_flow_caculation.py 与
   carbon_emission_flow.py 中实现。
 """
+
 
 from carbon_emission_flow import carbon_flow_caculation, system_balance_check
 import numpy as np
