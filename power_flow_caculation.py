@@ -12,23 +12,35 @@ def mpc_to_power_flow_analysis(mpc: dict) -> dict:
     :param mpc: 系统数据字典，包含 bus、branch、gen、baseMVA 等字段
     :return: 潮流计算结果字典（与 pypower.runpf 的结果结构一致）
     """
-    ppopt = ppoption(PF_ALG=1, VERBOSE=0, OUT_ALL=0)  # 设定潮流计算选项：牛顿法、静默输出、关闭详细打印
-    # ppopt = ppoption(PF_ALG=1, VERBOSE=0)          # 如需打印可改为此行
+    # ppopt = ppoption(PF_ALG=1, VERBOSE=0, OUT_ALL=0)  # 设定潮流计算选项：牛顿法、静默输出、关闭详细打印
+    ppopt = ppoption(PF_ALG=1, VERBOSE=0)          # 如需打印可改为此行
     power_flow_analysis_res, success = runpf(mpc, ppopt)  # 执行一次潮流计算，返回结果与是否成功标志
     return power_flow_analysis_res                         # 仅返回完整结果结构体（保持原有行为）
 
+def branch_direction_judge(results: dict) -> np.array:
+    """
+    本函数用于对支路功率的参考方向进行统一：当检测到“反向流”时，同时交换支路的 from/to 与功率两列，
+    以保证返回的每一行均以“from→to”为参考方向记录功率。
+    :param results: 潮流计算结果字典，需包含 'branch' 数组；本函数将使用其中的列 [0, 1, 13, 15]
+    :return: 二维数组 direction_correct_res，列为 [from, to, col13, col15]，且方向已纠正为 from→to
+    """
+    direction_correct_res = results['branch'][:, [0, 1, 13, 15]]  # 选取需要的列：from、to 及两列功率量（索引 13 与 15）
+    mask = direction_correct_res[:, -1] > 0                       # 当最后一列功率为正，视为“与当前 from→to 记录相反的方向”
+    direction_correct_res[mask, 0: 2] = direction_correct_res[mask, 0: 2][:, ::-1]  # 交换 from/to，使之与实际功率流向一致
+    direction_correct_res[mask, -2: ] = direction_correct_res[mask, -2: ][:, ::-1]  # 同步交换两列功率量，保持列含义位置不变
+    return direction_correct_res                                    # 返回方向已统一/纠正的支路结果
 
 
-def get_pk_arr(results: dict, pg_arr: np.array) -> np.array:
+def get_pk_arr(direction_correct_res, pg_arr: np.array) -> np.array:
     """
     用于计算各节点的流过功率 P_k，并在 pg_arr 的基础上回填到第二列
-    :param results: 潮流计算结果字典（含 'branch' 等关键数组）
-    :param pg_arr: 发电机注入功率数组（第一列为节点编号，第二列为该节点发电注入功率）
+    :param direction_correct_res: 方向已统一的支路结果数组，列含 [from, to, ..., P_ji]，最后一列为按 from→to 方向的功率
+    :param pg_arr: 节点-发电注入功率数组，两列 [bus, Pg]（第一列为节点编号，第二列为该节点发电注入功率）
     :return: 在第二列写入 P_k 的数组（与 pg_arr 形状一致）
     """
     # 计算规则：P_k = |节点流入功率之和| + 节点发电注入功率
     pk_arr = pg_arr.copy()                                  # 复制一份作为结果承载（避免覆盖原始输入）
-    pji_arr = results['branch'][:, [0, 1, 15]]              # 取出支路表中的 from、to、P_ji 列（假定第 15 列为 P_ji）
+    pji_arr = direction_correct_res[:, [0, 1, -1]]          # 取出 [from, to, P_ji] 列（P_ji 为最后一列）
 
     for idx, bus_id in enumerate(pk_arr[:, 0]):             # 遍历每个节点（以 pk_arr 的行定义为准）
         mask = pji_arr[:, 1] == bus_id                      # 选择所有“流入该节点”的支路（to == bus_id）
@@ -39,25 +51,25 @@ def get_pk_arr(results: dict, pg_arr: np.array) -> np.array:
     return pk_arr                                           # 返回写入了 P_k 的结果数组
 
 
-
-def get_au(results: dict, pk_arr: np.array) -> np.array:
+def get_au(direction_correct_res: np.array, pk_arr: np.array) -> np.array:
     """
-    本函数用于依据潮流结果与各节点流过功率构建潮流分布矩阵 A_u
-    :param results: 潮流计算结果字典（需包含 'bus' 与 'branch' 等键）
-    :param pk_arr: 各节点流过功率数组（第二列为 P_k，行顺序与节点编号一致）
+    本函数用于依据方向已统一的支路功率与各节点流过功率构建潮流分布矩阵 A_u
+    :param direction_correct_res: 方向已统一的支路结果数组，列含 [from, to, ..., P_ji]（P_ji 为最后一列）
+    :param pk_arr: 各节点流过功率数组，两列 [bus, P_k]（第二列为 P_k，行顺序与节点编号一致）
     :return: 潮流分布矩阵 A_u
     """
-    shape = results['bus'].shape[0]                   # 节点数量（用于确定 A_u 的规模）
-    pji_arr = results['branch'][:, [0, 1, 15]]        # 取出支路表的 from、to、P_ji 列（假定第 15 列为 P_ji）
-    au = np.eye(shape)                                # 初始化为单位阵（主对角线为 1）
+    shape = pk_arr.shape[0]                        # 节点数量（用于确定 A_u 的规模）
+    pji_arr = direction_correct_res                # 使用已统一方向的支路功率数组
+    au = np.eye(shape)                             # 初始化为单位阵（主对角线为 1）
 
     # 逐支路填充 A_u 的非对角元素
     for i in pji_arr:
-        bus_from = np.int32(i[0])                     # from 节点编号（1 基）
-        bus_to = np.int32(i[1])                       # to 节点编号（1 基）
+        bus_from = np.int32(i[0])                  # from 节点编号（1 基）
+        bus_to = np.int32(i[1])                    # to 节点编号（1 基）
         au[bus_to - 1, bus_from - 1] = - np.abs(i[-1]) / pk_arr[bus_from - 1, 1]  # A_u[to, from] = -|P_ji| / P_k(from)
 
-    return au                                         # 返回构造完成的 A_u
+    return au                                      # 返回构造完成的 A_u
+
 
 def get_pg_arr(results: dict) -> np.array:
     """
@@ -83,39 +95,41 @@ def get_plk_arr(results: dict) -> np.array:
     return results['bus'][:, [0, 2]]         # 直接从 bus 表抽取节点编号与有功负荷列
 
 
-def get_pkj_and_loss(results: dict) -> np.array:
+def get_pkj_and_loss(direction_correct_res: np.array) -> np.array:
     """
-    本函数用于从潮流计算结果中提取支路有功功率与网损功率，并合成为结果数组
-    :param results: 潮流计算结果字典（含 'branch' 数组）
-    :return: 四列数组：[from 节点, to 节点, P_kj, P_kj_loss]
+    本函数用于在“方向已统一”的支路结果上，生成 [from, to, P_kj, P_kj_loss] 四列数组
+    :param direction_correct_res: 方向已统一的支路结果数组，列含 [from, to, ..., P_kj, P_ji]，
+                                 其中最后两列依 from→to 方向分别为 P_kj 与 P_ji
+    :return: 四列数组：[from, to, P_kj, P_kj_loss]，其中 P_kj_loss = P_kj + P_ji
     """
-    _pkj_and_loss = results['branch'][:, [0, 1, 13, 15]]  # 取出支路的 from、to、P_kj、P_ji（或损耗相关）列
-    pkj_and_loss = _pkj_and_loss                          # 建立视图（保持原列顺序）
-    pkj_and_loss[:, -1] = _pkj_and_loss[:, -2] + _pkj_and_loss[:, -1]  # 最后一列作为“网损功率”= 第三列 + 第四列
-    return pkj_and_loss                                   # 返回支路有功功率与网损功率数组
+    pkj_and_loss = direction_correct_res.copy()                           # 复制一份以避免修改原数组；保持列顺序不变
+    pkj_and_loss[:, -1] = direction_correct_res[:, -2] + direction_correct_res[:, -1]  # 计算网损功率：P_kj_loss = P_kj + P_ji
+    return pkj_and_loss                                                   # 返回 [from, to, P_kj, P_kj_loss]
 
 
 def get_power_flow_paras(mpc: dict) -> dict:
     """
-    本函数用于基于一次潮流计算，整理后续碳流计算所需的关键数组与矩阵
+    本函数用于基于一次潮流计算，整理后续碳流计算所需的关键数组与矩阵；在生成支路相关量前，先对支路功率的参考方向做统一处理
     :param mpc: 系统数据结构（包含 bus、branch、gen、baseMVA 等）
     :return: 参数字典，含键：
-        - 'pg_arr'：发电机注入功率数组
-        - 'plk_arr'：节点有功负荷数组
-        - 'pkj_and_loss'：支路有功与网损功率数组
-        - 'pk_arr'：节点流过功率数组
-        - 'au'：潮流分布矩阵 A_u
-        - 'original_power_anlysis_res'：原始潮流计算结果
+        - 'pg_arr'：节点-发电注入功率数组，两列 [bus, Pg]
+        - 'plk_arr'：节点-有功负荷数组，两列 [bus, P_Lk]
+        - 'pkj_and_loss'：支路功率及网损数组，四列 [from, to, P_kj, P_kj_loss]（基于方向已统一的支路结果）
+        - 'pk_arr'：节点流过功率数组，两列 [bus, P_k]（P_k = |流入功率之和| + Pg）
+        - 'au'：潮流分布矩阵 A_u（由统一方向的支路功率与 P_k 推导）
+        - 'original_power_anlysis_res'：原始潮流计算结果（便于追溯/调试）
     """
     p_a_res = mpc_to_power_flow_analysis(mpc)        # 执行潮流计算，获得完整结果
     power_flow_paras = {}                            # 汇总容器
     power_flow_paras['pg_arr'] = get_pg_arr(p_a_res)                 # 节点-发电出力
     power_flow_paras['plk_arr'] = get_plk_arr(p_a_res)               # 节点-有功负荷
-    power_flow_paras['pkj_and_loss'] = get_pkj_and_loss(p_a_res)     # 支路有功与网损
-    power_flow_paras['pk_arr'] = get_pk_arr(p_a_res, power_flow_paras['pg_arr'])  # 节点流过功率
-    power_flow_paras['au'] = get_au(p_a_res, power_flow_paras['pk_arr'])          # 潮流分布矩阵
+    direction_correct_res = branch_direction_judge(p_a_res)          # 先统一支路功率参考方向（from→to）
+    power_flow_paras['pkj_and_loss'] = get_pkj_and_loss(direction_correct_res)     # 支路有功与网损
+    power_flow_paras['pk_arr'] = get_pk_arr(direction_correct_res, power_flow_paras['pg_arr'])  # 节点流入功率
+    power_flow_paras['au'] = get_au(direction_correct_res, power_flow_paras['pk_arr'])          # 潮流分布矩阵
     power_flow_paras['original_power_anlysis_res'] = p_a_res         # 保存原始潮流计算结果
     return power_flow_paras                                          # 返回参数集合
+
 
 
 

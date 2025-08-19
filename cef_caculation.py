@@ -59,7 +59,7 @@
 """
 
 
-from carbon_emission_flow import carbon_flow_caculation, system_balance_check
+from carbon_emission_flow import carbon_flow_caculation
 import numpy as np
 
 
@@ -94,5 +94,4 @@ unit_carbon_paras = np.array([
     [0.0010, 0.14, 4.0, 1.00, 0.80, 0.98, 0]
 ])
 carbon_flow_res = carbon_flow_caculation(mpc, unit_carbon_paras, 1)
-system_balance_check(carbon_flow_res)
 breakpoint

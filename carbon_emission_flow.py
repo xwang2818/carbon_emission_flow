@@ -18,12 +18,13 @@ def get_eg(pg_arr: np.array, unit_carbon_paras: np.array) -> np.array:
     mask = pg_arr[:, 1] != 0  # 返回一个bool向量，用于从pg筛选出发电机节点
     _pg = pg_arr[mask]  # 取出发电机节点
     pg_value = _pg[:, 1]  # 取出发电机节点的出力值
+    pg_num = pg_value.shape[0]
     pg_2 = np.diag(pg_value)  # 对角化发电机节点的出力值，本质上是pgi^2 / pgi
-    pg_1 = np.eye(2)  # 创建一个单位矩阵，本质上是pgi / pgi
+    pg_1 = np.eye(pg_num)  # 创建一个单位矩阵，本质上是pgi / pgi
     pg_0 = np.diag(1 / pg_value)  # 对角化发电机节点出力的倒数，本质上是1 / pgi
-    a = unit_carbon_paras[:, 0].reshape(2, -1)  # 从火电机组碳排放相关的参数取出a
-    b = unit_carbon_paras[:, 1].reshape(2, -1)  # 从火电机组碳排放相关的参数取出b
-    c = unit_carbon_paras[:, 2].reshape(2, -1)  # 从火电机组碳排放相关的参数取出c
+    a = unit_carbon_paras[:, 0].reshape(pg_num, -1)  # 从火电机组碳排放相关的参数取出a
+    b = unit_carbon_paras[:, 1].reshape(pg_num, -1)  # 从火电机组碳排放相关的参数取出b
+    c = unit_carbon_paras[:, 2].reshape(pg_num, -1)  # 从火电机组碳排放相关的参数取出c
     zeta = unit_carbon_paras[:, 3]  # 从火电机组碳排放相关的参数取出zeta
     eta = unit_carbon_paras[:, 4]  # 从火电机组碳排放相关的参数取出eta
     xi = unit_carbon_paras[:, 5]  # 从火电机组碳排放相关的参数取出xi
